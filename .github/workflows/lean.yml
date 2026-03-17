@@ -1,4 +1,4 @@
-name: Lean Proof Check
+name: Lean Certified Proof Pipeline
 
 on:
   push:
@@ -9,20 +9,37 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install elan
+      - name: Install Lean via elan
         run: |
           curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
           echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
-      - name: Verify Lean
-        run: lean --version
+      - name: Sync Mathlib Toolchain
+        run: |
+          cp .lake/packages/mathlib/lean-toolchain ./lean-toolchain || true
+          cat lean-toolchain
+          source $HOME/.elan/env || true
+          elan install $(cat lean-toolchain)
+          elan default $(cat lean-toolchain)
 
-      - name: Fetch Mathlib cache
+      - name: Fetch Mathlib Cache
         run: lake exe cache get
 
-      - name: Build Proofs
-        run: lake build
+      - name: Build all proofs
+        run: |
+          for file in ChronoFlow/*.lean; do
+            echo "Building proof $file..."
+            if lake build --file "$file"; then
+              echo "$file fully type-checked, moving to Certified..."
+              cp "$file" Certified/
+            else
+              echo "ERROR: $file failed type-check"
+              exit 1
+            fi
+          done
+
+      - name: Final list of certified proofs
+        run: ls -1 Certified
