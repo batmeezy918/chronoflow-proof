@@ -9,37 +9,47 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Lean via elan
+      - name: Install elan
         run: |
           curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
           echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
-      - name: Sync Mathlib Toolchain
+      - name: Initialize project (get mathlib first)
         run: |
-          cp .lake/packages/mathlib/lean-toolchain ./lean-toolchain || true
+          lake update
+
+      - name: Sync toolchain EXACTLY to Mathlib
+        run: |
+          cp .lake/packages/mathlib/lean-toolchain ./lean-toolchain
           cat lean-toolchain
-          source $HOME/.elan/env || true
+          source $HOME/.elan/env
           elan install $(cat lean-toolchain)
           elan default $(cat lean-toolchain)
 
-      - name: Fetch Mathlib Cache
+      - name: Clean broken state (important)
+        run: |
+          rm -rf build .lake/build
+
+      - name: Fetch Mathlib cache (now safe)
         run: lake exe cache get
 
-      - name: Build all proofs
+      - name: Build proofs deterministically
         run: |
+          mkdir -p Certified
           for file in ChronoFlow/*.lean; do
-            echo "Building proof $file..."
-            if lake build --file "$file"; then
-              echo "$file fully type-checked, moving to Certified..."
+            echo "Checking $file"
+            if lake env lean "$file"; then
+              echo "✔ VERIFIED: $file"
               cp "$file" Certified/
             else
-              echo "ERROR: $file failed type-check"
+              echo "❌ FAILED: $file"
               exit 1
             fi
           done
 
-      - name: Final list of certified proofs
-        run: ls -1 Certified
+      - name: Show certified proofs
+        run: ls -la Certified
