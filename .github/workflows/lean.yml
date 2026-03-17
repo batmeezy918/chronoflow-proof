@@ -1,4 +1,4 @@
-name: Lean Certified Proof Pipeline
+name: Lean Verified Proof System
 
 on:
   push:
@@ -7,49 +7,97 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      # Install Lean
       - name: Install elan
         run: |
           curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
           echo "$HOME/.elan/bin" >> $GITHUB_PATH
 
-      - name: Initialize project (get mathlib first)
-        run: |
-          lake update
+      # Pull mathlib first
+      - name: Initialize project
+        run: lake update
 
-      - name: Sync toolchain EXACTLY to Mathlib
+      # Sync toolchain EXACTLY
+      - name: Sync toolchain
         run: |
           cp .lake/packages/mathlib/lean-toolchain ./lean-toolchain
-          cat lean-toolchain
           source $HOME/.elan/env
           elan install $(cat lean-toolchain)
           elan default $(cat lean-toolchain)
 
-      - name: Clean broken state (important)
-        run: |
-          rm -rf build .lake/build
+      # Clean state
+      - name: Clean
+        run: rm -rf build .lake/build
 
-      - name: Fetch Mathlib cache (now safe)
+      # Cache
+      - name: Fetch Mathlib cache
         run: lake exe cache get
 
-      - name: Build proofs deterministically
+      # Core verification engine
+      - name: Verify proofs with structured output
         run: |
           mkdir -p Certified
+          mkdir -p Reports
+
+          echo "{" > Reports/results.json
+          echo '"proofs": [' >> Reports/results.json
+
+          FIRST=1
+
           for file in ChronoFlow/*.lean; do
-            echo "Checking $file"
-            if lake env lean "$file"; then
-              echo "✔ VERIFIED: $file"
+            NAME=$(basename "$file")
+
+            echo "---- Checking $NAME ----"
+
+            if lake env lean "$file" > Reports/$NAME.log 2>&1; then
+              STATUS="pass"
               cp "$file" Certified/
             else
-              echo "❌ FAILED: $file"
+              STATUS="fail"
+            fi
+
+            # Extract only Lean errors
+            ERRORS=$(grep "error:" Reports/$NAME.log | sed 's/"/\\"/g')
+
+            if [ $FIRST -eq 0 ]; then
+              echo "," >> Reports/results.json
+            fi
+
+            echo "{" >> Reports/results.json
+            echo "\"file\": \"$NAME\"," >> Reports/results.json
+            echo "\"status\": \"$STATUS\"," >> Reports/results.json
+            echo "\"errors\": \"$ERRORS\"" >> Reports/results.json
+            echo "}" >> Reports/results.json
+
+            FIRST=0
+
+            if [ "$STATUS" = "fail" ]; then
+              echo "❌ $NAME FAILED"
+              cat Reports/$NAME.log | grep error || true
               exit 1
+            else
+              echo "✔ $NAME VERIFIED"
             fi
           done
 
-      - name: Show certified proofs
-        run: ls -la Certified
+          echo "]}" >> Reports/results.json
+
+      # Human-readable summary
+      - name: Print summary
+        run: |
+          echo "===== VERIFIED PROOFS ====="
+          ls Certified || true
+          echo "===== REPORT ====="
+          cat Reports/results.json
+
+      # Upload artifacts (logs + reports)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proof-reports
+          path: Reports/
